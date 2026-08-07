@@ -1,0 +1,13 @@
+# Archived duplicates of photos/ (photos/ itself is tracked and is the source of truth)
+photos_part*.zip
+
+# Excel lock files
+~$*.xlsx
+~$*.xls
+
+# Browser automation screenshots (claude-in-chrome / agent-browser)
+.agent-browser/
+
+# OS junk
+Thumbs.db
+.DS_Store
