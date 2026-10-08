@@ -10,10 +10,16 @@
 Беремо рівно 7 позицій «Чуйка» з прайсу, підтягуємо до них опис/фото/параметри
 з фіду. Ціна — з прайсу (свіжіша). Без варіацій — кожен товар окрема картка.
 
-Запуск:  python build_chuyka_import.py
+Фото: blue-bird.tech віддає 403 без Referer (hotlink-захист), тому Horoshop не
+зможе забрати їх за прямими URL. Скрипт качає їх у photos/ (<артикул>.<ext>,
+<артикул>@N.<ext>) і пише в "Фото"/"Галерея" імена файлів. Якщо задано
+PHOTO_BASE_URL — пише повні URL (https://<домен>/<шлях>/<файл>) під
+завантажені туди фото.
+
+Запуск:  python build_chuyka_import.py [PHOTO_BASE_URL]
 Потребує: openpyxl
 """
-import openpyxl, re, html
+import openpyxl, re, html, os, sys, urllib.request
 import xml.etree.ElementTree as ET
 from openpyxl import Workbook
 
@@ -21,6 +27,11 @@ FEED  = "marketplace_feed_29_09 (1).xml"
 PRICE = "ПРАЙС_ДЛЯ_ПАРТНЕРІВ_ОНОВЛЕНИЙ_0110.xlsx"
 OUT   = "horoshop_chuyka_import.xlsx"
 
+PHOTO_DIR = "photos"
+PHOTO_BASE_URL = (sys.argv[1].rstrip("/") + "/") if len(sys.argv) > 1 else ""
+UA_NAME_FIX = {  # у фіді "Чуйка 3 0" (втрачена крапка); назву беремо як у прайсі
+    "BB-19441": "Кріплення для детектора дронів «Чуйка»",
+}
 SECTION = "Детектори дронів"   # назва розділу на сайті (колонка "Раздел")
 BRAND   = "Blue Bird"
 CURRENCY = "UAH"
@@ -57,6 +68,38 @@ HEADER = [
     "Код налоговой группы Вчасно.Каса","Уникальный код налога","Штрихкод",
     "Код производителя товара (MPN)","На складе для Prom","Электронный товар",
 ]
+
+
+def fetch(url, dest):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120 Safari/537.36",
+        "Referer": "https://www.blue-bird.tech/",
+        "Accept": "image/jpeg,image/png,*/*"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        data = r.read()
+    with open(dest, "wb") as f:
+        f.write(data)
+
+
+def photo_names(sku, urls):
+    """Качає фото в PHOTO_DIR, повертає імена файлів у порядку urls."""
+    os.makedirs(PHOTO_DIR, exist_ok=True)
+    names = []
+    for i, u in enumerate(urls):
+        ext = os.path.splitext(u.split("?")[0])[1].lower() or ".jpg"
+        ext = ".jpg" if ext == ".jpeg" else ext
+        name = f"{sku}{'' if i == 0 else '@%d' % i}{ext}"
+        dest = os.path.join(PHOTO_DIR, name)
+        if not os.path.exists(dest):
+            fetch(u, dest)
+        names.append(PHOTO_BASE_URL + name)
+    return names
+
+
+def strip_hotlinks(text):
+    """Прибирає <img> з blue-bird.tech в описі (хотлінк віддає 403)."""
+    return re.sub(r'<img[^>]*blue-bird\.tech[^>]*>', '', text)
 
 
 def load_feed():
@@ -141,13 +184,15 @@ def main():
         if price is None:
             missing.append(("no price", price_name)); continue
 
-        name_ua = offer.findtext("name_ua") or offer.findtext("name") or price_name
-        name_ru = offer.findtext("name") or name_ua
         vcode   = offer.findtext("vendorCode") or f"BB-{offer.get('id')}"
+        name_ua = (UA_NAME_FIX.get(vcode) or offer.findtext("name_ua")
+                   or offer.findtext("name") or price_name)
+        name_ru = offer.findtext("name") or name_ua
         country = offer.findtext("country_of_origin") or "Україна"
         pics    = [p.text for p in offer.findall("picture") if p.text]
-        main_pic = pics[0] if pics else ""
-        gallery  = ";".join(pics[1:]) if len(pics) > 1 else ""
+        files    = photo_names(vcode, pics)
+        main_pic = files[0] if files else ""
+        gallery  = ";".join(files[1:])
         avail = "В наявності" if offer.get("available") == "true" else "Нет в наличии"
 
         row = {h: "" for h in HEADER}
@@ -169,8 +214,15 @@ def main():
             f"Офіційний партнер, гарантія, доставка по Україні."
         )[:255]
         row["h1 заголовок (UA)"] = name_ua
-        row["Описание товара (UA)"] = build_desc(offer, "ua")
-        row["Описание товара (RU)"] = build_desc(offer, "ru")
+        row["HTML title (RU)"] = f"{name_ru} — купить, цена в Украине"
+        row["META description (RU)"] = (
+            f"{name_ru} от Blue Bird Tech. Детектор дронов «Чуйка». "
+            f"Официальный партнёр, гарантия, доставка по Украине."
+        )[:255]
+        row["h1 заголовок (RU)"] = name_ru
+        row["Короткое описание (RU)"] = name_ru
+        row["Описание товара (UA)"] = strip_hotlinks(build_desc(offer, "ua"))
+        row["Описание товара (RU)"] = strip_hotlinks(build_desc(offer, "ru"))
         row["Короткое описание (UA)"] = name_ua
         row["Количество"] = 1 if avail == "В наявності" else 0
         row["Состояние товара"] = "Новий"
